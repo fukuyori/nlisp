@@ -146,23 +146,40 @@ static class Tokenizer
         int i = 0;
         while (i < s.Length)
         {
-            if (char.IsWhiteSpace(s[i]))
+            char c = s[i];
+
+            // 1) 空白はスキップ
+            if (char.IsWhiteSpace(c))
             {
                 i++;
                 continue;
             }
-            else if (s[i] == '(' || s[i] == ')')
+            // 2) '(' または ')' は単独トークン
+            else if (c == '(' || c == ')')
             {
-                tokens.Add(s[i].ToString());
+                tokens.Add(c.ToString());
+                i++;
+                continue;
+            }
+            // 3) シングルクォートは独立したトークン "'"
+            else if (c == '\'')
+            {
+                tokens.Add("'");
                 i++;
                 continue;
             }
             else
             {
-                // シンボルまたは数値：区切り文字まで読む
+                // 4) それ以外はシンボルまたは数値 (区切り文字まで読む)
                 int j = i;
-                while (j < s.Length && !char.IsWhiteSpace(s[j]) && s[j] != '(' && s[j] != ')')
+                while (j < s.Length
+                       && !char.IsWhiteSpace(s[j])
+                       && s[j] != '('
+                       && s[j] != ')'
+                       && s[j] != '\'')  // シングルクォートも区切りとする
+                {
                     j++;
+                }
                 tokens.Add(s.Substring(i, j - i));
                 i = j;
             }
@@ -170,7 +187,6 @@ static class Tokenizer
         return tokens;
     }
 }
-
 
 static class Parser
 {
@@ -183,9 +199,25 @@ static class Parser
             throw new Exception("Unexpected end of tokens");
 
         string tok = tokens[pos];
+
+        // --- 新規追加: シングルクォート（'）が出現したら quote 式に展開 ---
+        if (tok == "'")
+        {
+            // ' <expr> は (quote <expr>) と同じ
+            pos++;  // ' を消費
+            // 次の S 式をパース
+            var quotedExpr = Parse(tokens, ref pos);
+            // (quote quotedExpr) を LispCons でつくる
+            // (quote quotedExpr) → new LispCons(new LispSymbol("quote"), new LispCons(quotedExpr, LispNil))
+            return new LispCons(
+                new LispSymbol("quote"),
+                new LispCons(quotedExpr, LispNil.Instance)
+            );
+        }
+
+        // 既存の処理: "(" ならリストをパース、")" はエラー、その他はシンボル／数値
         if (tok == "(")
         {
-            // リストの開始
             pos++; // '(' を消費
             return ParseList(tokens, ref pos);
         }
@@ -197,7 +229,6 @@ static class Parser
         {
             // シンボル or 数値
             pos++;
-            // 数値に変換可能なら LispNumber, そうでなければ LispSymbol
             if (double.TryParse(tok, out double num))
             {
                 return new LispNumber(num);
@@ -223,10 +254,8 @@ static class Parser
 
         // car をパース
         LispObj car = Parse(tokens, ref pos);
-
         // cdr をパース
         LispObj cdr = ParseList(tokens, ref pos);
-
         return new LispCons(car, cdr);
     }
 
@@ -238,7 +267,6 @@ static class Parser
         return Parse(tokens, ref pos);
     }
 }
-
 
 class Env
 {
@@ -271,39 +299,55 @@ class Env
 // Evaluator クラス全体
 static class Evaluator
 {
-    // グローバル環境を初期化し、組み込み関数を登録して返す
+    /// <summary>
+    /// グローバル環境を初期化し、組み込み関数およびシンボル "nil"/"NIL" を登録して返す。
+    /// </summary>
     public static Env CreateGlobalEnv()
     {
         var env = new Env();
 
-        // 既存の算術演算子
-        env.Define("+", new LispFunction(BuiltinAdd));
-        env.Define("-", new LispFunction(BuiltinSubtract));
-        env.Define("*", new LispFunction(BuiltinMultiply));
-        env.Define("/", new LispFunction(BuiltinDivide));
+        // --------------------------------------------------
+        // "nil" および "NIL" を空リストオブジェクト (LispNil.Instance) に紐づける
+        // --------------------------------------------------
+        env.Define("nil", LispNil.Instance);
+        env.Define("NIL", LispNil.Instance);
 
-        // 今回追加した数値比較演算子
-        env.Define("=",  new LispFunction(BuiltinNumEq));
-        env.Define("<",  new LispFunction(BuiltinLess));
-        env.Define(">",  new LispFunction(BuiltinGreater));
-        env.Define("<=", new LispFunction(BuiltinLessEqual));
-        env.Define(">=", new LispFunction(BuiltinGreaterEqual));
+        // 算術演算子
+        env.Define("+",    new LispFunction(BuiltinAdd));
+        env.Define("-",    new LispFunction(BuiltinSubtract));
+        env.Define("*",    new LispFunction(BuiltinMultiply));
+        env.Define("/",    new LispFunction(BuiltinDivide));
+
+        // 数値比較演算子
+        env.Define("=",    new LispFunction(BuiltinNumEq));
+        env.Define("<",    new LispFunction(BuiltinLess));
+        env.Define(">",    new LispFunction(BuiltinGreater));
+        env.Define("<=",   new LispFunction(BuiltinLessEqual));
+        env.Define(">=",   new LispFunction(BuiltinGreaterEqual));
 
         // リスト操作
-        env.Define("cons",  new LispFunction(BuiltinCons));
-        env.Define("car",   new LispFunction(BuiltinCar));
-        env.Define("cdr",   new LispFunction(BuiltinCdr));
+        env.Define("cons",   new LispFunction(BuiltinCons));
+        env.Define("car",    new LispFunction(BuiltinCar));
+        env.Define("cdr",    new LispFunction(BuiltinCdr));
+        env.Define("append", new LispFunction(BuiltinAppend));
+
+        // 新規追加: list, length
+        env.Define("list",   new LispFunction(BuiltinList));
+        env.Define("length", new LispFunction(BuiltinLength));
 
         // シンボル/NIL 等価判定・アトムチェック
         env.Define("eq",     new LispFunction(BuiltinEq));
         env.Define("atom?",  new LispFunction(BuiltinAtomP));
 
-        // defun は Eval 内で特殊処理するため、ここで登録は不要
+        // defun, function, quote, if, lambda, begin などは Eval 内で特殊処理するため、
+        // ここでバインドする必要はない。
 
         return env;
     }
 
-    // Eval 本体
+    /// <summary>
+    /// S式を評価して結果を返す。特殊フォームと関数適用を処理するメインメソッド。
+    /// </summary>
     public static LispObj Eval(LispObj expr, Env env)
     {
         // 1) シンボル参照
@@ -311,12 +355,14 @@ static class Evaluator
         {
             return env.Lookup(sym.Name);
         }
+
         // 2) 数値・NIL はそのまま返す
         if (expr is LispNumber || expr is LispNil)
         {
             return expr;
         }
-        // 3) リスト（LispCons）の場合
+
+        // 3) リスト (LispCons) の場合
         if (expr is LispCons cons)
         {
             var head = cons.Car;
@@ -324,69 +370,110 @@ static class Evaluator
             // --- 3-1) quote ---
             if (head is LispSymbol symHead && symHead.Name == "quote")
             {
+                // (quote <datum>) → <datum> をそのまま返す
                 return ((LispCons)cons.Cdr).Car;
             }
-            // --- 3-2) if ---
+
+            // --- 3-2) begin: 複数式を順に評価し、最後の結果を返す ---
+            if (head is LispSymbol sBegin && sBegin.Name == "begin")
+            {
+                var seq    = new ConsList(cons.Cdr);
+                LispObj result = LispNil.Instance;
+                while (!seq.IsEmpty)
+                {
+                    result = Eval(seq.First, env);
+                    seq = seq.Rest;
+                }
+                return result;
+            }
+
+            // --- 3-3) if: (if <test> <conseq> <alt>) ---
             if (head is LispSymbol sIf && sIf.Name == "if")
             {
-                var args = new ConsList(cons.Cdr);
+                var args       = new ConsList(cons.Cdr);
                 var testExpr   = args.First;
                 var conseqExpr = args.Rest.First;
                 var altExpr    = args.Rest.Rest.First;
 
                 var testResult = Eval(testExpr, env);
+                // NIL 以外を真とみなす
                 if (!(testResult is LispNil))
                     return Eval(conseqExpr, env);
                 else
                     return Eval(altExpr, env);
             }
-            // --- 3-3) define ---
+
+            // --- 3-4) define: (define <symbol> <expr>) ---
             if (head is LispSymbol sDef && sDef.Name == "define")
             {
-                var args = new ConsList(cons.Cdr);
+                var args      = new ConsList(cons.Cdr);
                 if (!(args.First is LispSymbol varSym))
-                    throw new Exception("define: first argument must be symbol");
+                    throw new Exception("define: first argument must be a symbol");
                 var valueExpr = args.Rest.First;
-                var val = Eval(valueExpr, env);
+                var val       = Eval(valueExpr, env);
                 env.Define(varSym.Name, val);
                 return varSym;
             }
-            // --- 3-4) lambda ---
+
+            // --- 3-5) lambda: (lambda (<params>) <body>) ---
             if (head is LispSymbol sLam && sLam.Name == "lambda")
             {
-                var args = new ConsList(cons.Cdr);
-                var paramList = args.First;   // LispCons または NIL
-                var body = args.Rest.First;   // ボディ式
+                var args      = new ConsList(cons.Cdr);
+                var paramList = args.First;         // LispCons または NIL
+                var body      = args.Rest.First;     // 本体式
                 return new LispFunction(paramList, body, env);
             }
-            // --- 3-5) defun ---
+
+            // --- 3-6) defun: (defun <name> (<params>) <body>) ---
             if (head is LispSymbol sDefun && sDefun.Name == "defun")
             {
                 var args = new ConsList(cons.Cdr);
 
                 // 1) 関数名シンボル
-                var funcNameSym = (LispSymbol)args.First;
+                if (!(args.First is LispSymbol funcNameSym))
+                    throw new Exception("defun: first argument must be a symbol");
                 string funcName = funcNameSym.Name;
 
                 // 2) パラメータリスト (LispCons または NIL)
                 var paramList = args.Rest.First;
 
-                // 3) 本体部分 (ここでは単一式とする)
+                // 3) 本体式 (単一式とする)
                 var bodyExpr = args.Rest.Rest.First;
 
                 // 4) ラムダ関数オブジェクトを生成して環境にバインド
                 var funcObj = new LispFunction(paramList, bodyExpr, env);
                 env.Define(funcName, funcObj);
 
-                // 返り値は関数名
+                // 返り値は関数名シンボル
                 return funcNameSym;
             }
-            // --- 3-6) 関数適用 ---
+
+            // --- 3-7) function: (function <symbol>) または (function (lambda ...)) ---
+            if (head is LispSymbol sFunc && sFunc.Name == "function")
+            {
+                var argsList = new ConsList(cons.Cdr);
+                if (argsList.IsEmpty || !argsList.Rest.IsEmpty)
+                    throw new Exception("function requires exactly one argument");
+
+                var targetExpr = argsList.First;
+                // targetExpr を評価して関数オブジェクトを得る
+                var funcObj = Eval(targetExpr, env);
+                if (funcObj is LispFunction lf)
+                {
+                    return lf;
+                }
+                else
+                {
+                    throw new Exception("function: argument must evaluate to a function object");
+                }
+            }
+
+            // --- 3-8) 通常の関数適用 ---
             var evaluatedHead = Eval(head, env);
             if (evaluatedHead is LispFunction func)
             {
                 // 引数リストを評価
-                var rawArgs = (LispCons)cons.Cdr;
+                var rawArgs        = (LispCons)cons.Cdr;
                 var evaledArgsList = MapEvalArgs(rawArgs, env);
 
                 if (!func.IsLambda)
@@ -396,7 +483,7 @@ static class Evaluator
                 }
                 else
                 {
-                    // ラムダ関数 (Closure) を呼び出し
+                    // ラムダ関数 (クロージャ) を呼び出す
                     var newEnv = new Env(func.ClosureEnv);
                     BindParams(func.ParamList, evaledArgsList, newEnv);
                     return Eval(func.Body, newEnv);
@@ -407,32 +494,38 @@ static class Evaluator
                 throw new Exception($"First element is not a function: {evaluatedHead.ToRepr()}");
             }
         }
+
         throw new Exception("Unknown expression type: " + expr.GetType());
     }
 
-    // 引数リスト（LispCons）の各要素を評価してリストにまとめる
+    /// <summary>
+    /// 引数リスト (LispCons) の各要素を評価し、新しいリストとして返すヘルパー。
+    /// </summary>
     private static ConsList MapEvalArgs(LispCons rawArgs, Env env)
     {
         if (rawArgs is LispNil)
             return new ConsList(LispNil.Instance);
 
         var firstEval = Eval(rawArgs.Car, env);
-        var restEval = (rawArgs.Cdr is LispCons restCons)
-            ? MapEvalArgs(restCons, env)
-            : new ConsList(LispNil.Instance);
+        var restEval  = (rawArgs.Cdr is LispCons restCons)
+                            ? MapEvalArgs(restCons, env)
+                            : new ConsList(LispNil.Instance);
 
         return new ConsList(new LispCons(firstEval, restEval.Raw));
     }
 
-    // ラムダのパラメータリストと渡された引数を新環境に束縛
+    /// <summary>
+    /// ラムダのパラメータリストと渡された引数を新しい環境に束縛するヘルパー。
+    /// </summary>
     private static void BindParams(LispObj paramList, ConsList args, Env env)
     {
         if (paramList is LispNil && args.IsEmpty)
             return;
+
         if (paramList is LispCons pc && !args.IsEmpty)
         {
             if (!(pc.Car is LispSymbol sym))
-                throw new Exception("Lambda parameter must be symbol");
+                throw new Exception("Lambda parameter must be a symbol");
             env.Define(sym.Name, args.First);
             BindParams(pc.Cdr, args.Rest, env);
         }
@@ -442,14 +535,22 @@ static class Evaluator
         }
     }
 
-    // --- 数値を期待し、LispNumber へキャスト ---
+    /// <summary>
+    /// 数値を期待し、LispNumber へキャストするヘルパー。
+    /// </summary>
     private static double AsNumber(LispObj obj)
     {
         if (obj is LispNumber num) return num.Value;
         throw new Exception($"Expected number, but got {obj.ToRepr()}");
     }
 
-    // --- 既存の組み込み関数（算術演算など） ---
+    // --------------------------------------------------
+    // 以下、組み込み関数（Builtin）の実装
+    // --------------------------------------------------
+
+    /// <summary>
+    /// '+' : (+ arg1 arg2 ...)
+    /// </summary>
     private static LispObj BuiltinAdd(ConsList args, Env env)
     {
         double sum = 0;
@@ -460,6 +561,10 @@ static class Evaluator
         }
         return new LispNumber(sum);
     }
+
+    /// <summary>
+    /// '-' : (- arg1 arg2 ...)
+    /// </summary>
     private static LispObj BuiltinSubtract(ConsList args, Env env)
     {
         if (args.IsEmpty)
@@ -475,6 +580,10 @@ static class Evaluator
         }
         return new LispNumber(result);
     }
+
+    /// <summary>
+    /// '*' : (* arg1 arg2 ...)
+    /// </summary>
     private static LispObj BuiltinMultiply(ConsList args, Env env)
     {
         double prod = 1;
@@ -485,6 +594,10 @@ static class Evaluator
         }
         return new LispNumber(prod);
     }
+
+    /// <summary>
+    /// '/' : (/ arg1 arg2 ...)
+    /// </summary>
     private static LispObj BuiltinDivide(ConsList args, Env env)
     {
         if (args.IsEmpty)
@@ -501,10 +614,10 @@ static class Evaluator
         return new LispNumber(result);
     }
 
-    // --- ここから比較演算子の実装 ---
-
-    // '=' : 数値の等価判定（複数引数も可）
-    //    例: (= 3 3) → T, (= 2 2 2) → T, (= 2 3) → NIL
+    /// <summary>
+    /// '=' : 数値の等価判定 (複数引数可)
+    ///    例: (= 2 2 2) → T, (= 2 3) → NIL
+    /// </summary>
     private static LispObj BuiltinNumEq(ConsList args, Env env)
     {
         if (args.IsEmpty || args.Rest.IsEmpty)
@@ -520,7 +633,10 @@ static class Evaluator
         return new LispSymbol("T");
     }
 
-    // '<' : 数値の小なり判定（連鎖も可：(< 1 2 3) → T, (< 2 2) → NIL）
+    /// <summary>
+    /// '<' : 数値の小なり判定 (連鎖可)
+    ///    例: (< 1 2 3) → T, (< 2 2) → NIL
+    /// </summary>
     private static LispObj BuiltinLess(ConsList args, Env env)
     {
         if (args.IsEmpty || args.Rest.IsEmpty)
@@ -538,7 +654,9 @@ static class Evaluator
         return new LispSymbol("T");
     }
 
-    // '>' : 数値の大なり判定（連鎖も可）
+    /// <summary>
+    /// '>' : 数値の大なり判定 (連鎖可)
+    /// </summary>
     private static LispObj BuiltinGreater(ConsList args, Env env)
     {
         if (args.IsEmpty || args.Rest.IsEmpty)
@@ -556,7 +674,9 @@ static class Evaluator
         return new LispSymbol("T");
     }
 
-    // '<=' : 小なりイコール判定（連鎖可）
+    /// <summary>
+    /// '<=' : 小なりイコール判定 (連鎖可)
+    /// </summary>
     private static LispObj BuiltinLessEqual(ConsList args, Env env)
     {
         if (args.IsEmpty || args.Rest.IsEmpty)
@@ -574,7 +694,9 @@ static class Evaluator
         return new LispSymbol("T");
     }
 
-    // '>=' : 大なりイコール判定（連鎖可）
+    /// <summary>
+    /// '>=' : 大なりイコール判定 (連鎖可)
+    /// </summary>
     private static LispObj BuiltinGreaterEqual(ConsList args, Env env)
     {
         if (args.IsEmpty || args.Rest.IsEmpty)
@@ -592,8 +714,194 @@ static class Evaluator
         return new LispSymbol("T");
     }
 
-    // --- シンボル／NIL の等価判定 ---
-    // (eq a b) → 両方が同じ数値、または同じシンボル、または両方 NIL のとき T、それ以外は NIL
+    /// <summary>
+    /// cons: (cons a b) → 新しいリスト (a . b)
+    /// </summary>
+    private static LispObj BuiltinCons(ConsList args, Env env)
+    {
+        if (args.IsEmpty || args.Rest.IsEmpty || !args.Rest.Rest.IsEmpty)
+            throw new Exception("cons requires exactly 2 arguments");
+        var a = args.First;
+        var b = args.Rest.First;
+        return new LispCons(a, b);
+    }
+
+    /// <summary>
+    /// car: (car lst) → lst の先頭要素。
+    ///       引数が空リスト (NIL) の場合は NIL を返す。
+    /// </summary>
+    private static LispObj BuiltinCar(ConsList args, Env env)
+    {
+        if (args.IsEmpty || !args.Rest.IsEmpty)
+            throw new Exception("car requires exactly 1 argument");
+        var lst = args.First;
+        if (lst is LispNil)
+        {
+            // 空リストなら NIL を返す
+            return LispNil.Instance;
+        }
+        if (lst is LispCons consList)
+        {
+            return consList.Car;
+        }
+        throw new Exception("car expects a list");
+    }
+
+    /// <summary>
+    /// cdr: (cdr lst) → lst の残りのリスト。
+    ///       引数が空リスト (NIL) の場合は NIL を返す。
+    /// </summary>
+    private static LispObj BuiltinCdr(ConsList args, Env env)
+    {
+        if (args.IsEmpty || !args.Rest.IsEmpty)
+            throw new Exception("cdr requires exactly 1 argument");
+        var lst = args.First;
+        if (lst is LispNil)
+        {
+            // 空リストなら NIL を返す
+            return LispNil.Instance;
+        }
+        if (lst is LispCons consList)
+        {
+            return consList.Cdr;
+        }
+        throw new Exception("cdr expects a list");
+    }
+
+    /// <summary>
+    /// append: (append list1 list2 ... listN) → すべてのリストを連結して新しいリストを返す。
+    ///   例: (append '(1 2) '(3 4) '(5)) → (1 2 3 4 5)
+    ///        (append) → NIL
+    ///        (append '(a b)) → (a b) のコピー
+    /// </summary>
+    private static LispObj BuiltinAppend(ConsList args, Env env)
+    {
+        // ダミーの先頭ノードを作成し、tail が現在の末尾を指す
+        LispCons dummyHead = new LispCons(LispNil.Instance, LispNil.Instance);
+        LispCons tail = dummyHead;
+
+        // 引数リストが空なら NIL を返す
+        if (args.IsEmpty)
+            return LispNil.Instance;
+
+        // 各リスト引数について、要素をコピーして続けていく
+        var remainingLists = args;
+        while (!remainingLists.IsEmpty)
+        {
+            var currentList = remainingLists.First;
+            // currentList が空リストなら何もしない
+            if (currentList is LispNil)
+            {
+                // スキップ
+            }
+            else if (currentList is LispCons consList)
+            {
+                // リストを走査し、要素を1つずつ取り出してコピー
+                LispCons iter = consList;
+                while (iter is LispCons)
+                {
+                    // 新しいノードを作って末尾に付加
+                    var newNode = new LispCons(iter.Car, LispNil.Instance);
+                    tail.Cdr = newNode;
+                    tail = newNode;
+
+                    // 次の要素へ
+                    if (iter.Cdr is LispCons nextCons)
+                    {
+                        iter = nextCons;
+                    }
+                    else
+                    {
+                        // Cdr が NIL の場合、走査終了
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                throw new Exception("append expects list arguments");
+            }
+
+            remainingLists = remainingLists.Rest;
+        }
+
+        // ダミーヘッドの Cdr が連結後のリストの先頭
+        if (dummyHead.Cdr is LispCons resultList)
+            return resultList;
+        else
+            return LispNil.Instance;
+    }
+
+    /// <summary>
+    /// list: (list arg1 arg2 ... argN) → 新しいリスト (arg1 arg2 ... argN)
+    ///   例: (list 1 2 3) → (1 2 3)
+    ///        (list) → NIL
+    /// </summary>
+    private static LispObj BuiltinList(ConsList args, Env env)
+    {
+        // ダミーの先頭ノードを使い、tail が末尾を指す
+        LispCons dummyHead = new LispCons(LispNil.Instance, LispNil.Instance);
+        LispCons tail = dummyHead;
+
+        // 引数リストを走査し、要素をコピーしていく
+        var remaining = args;
+        while (!remaining.IsEmpty)
+        {
+            var newNode = new LispCons(remaining.First, LispNil.Instance);
+            tail.Cdr = newNode;
+            tail = newNode;
+            remaining = remaining.Rest;
+        }
+
+        // ダミーヘッドの Cdr が新しいリスト
+        if (dummyHead.Cdr is LispCons resultList)
+            return resultList;
+        else
+            return LispNil.Instance;
+    }
+
+    /// <summary>
+    /// length: (length lst) → リストの要素数を返す (数値)
+    ///   例: (length '(a b c)) → 3
+    ///        (length nil) → 0
+    /// </summary>
+    private static LispObj BuiltinLength(ConsList args, Env env)
+    {
+        if (args.IsEmpty || !args.Rest.IsEmpty)
+            throw new Exception("length requires exactly one argument");
+        var lst = args.First;
+
+        int count = 0;
+        if (lst is LispNil)
+        {
+            return new LispNumber(0);
+        }
+        else if (lst is LispCons consList)
+        {
+            LispCons iter = consList;
+            while (iter is LispCons)
+            {
+                count++;
+                if (iter.Cdr is LispCons nextCons)
+                {
+                    iter = nextCons;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            return new LispNumber(count);
+        }
+        else
+        {
+            throw new Exception("length expects a list");
+        }
+    }
+
+    /// <summary>
+    /// eq: (eq a b) → a, b が同じ数値 OR 同じシンボル OR 両方 NIL なら T、それ以外は NIL
+    /// </summary>
     private static LispObj BuiltinEq(ConsList args, Env env)
     {
         if (args.IsEmpty || args.Rest.IsEmpty || !args.Rest.Rest.IsEmpty)
@@ -610,7 +918,9 @@ static class Evaluator
         return eq ? new LispSymbol("T") : LispNil.Instance;
     }
 
-    // atom? : （NIL または LispNumber または LispSymbol なら T、それ以外 NIL）
+    /// <summary>
+    /// atom?: (atom? x) → x が NIL OR LispNumber OR LispSymbol のとき T、それ以外 (つまり LispCons) は NIL
+    /// </summary>
     private static LispObj BuiltinAtomP(ConsList args, Env env)
     {
         if (args.IsEmpty || !args.Rest.IsEmpty)
@@ -621,34 +931,6 @@ static class Evaluator
         else
             return LispNil.Instance;
     }
-
-    // cons / car / cdr の実装（省略せず全部載せておきます）
-    private static LispObj BuiltinCons(ConsList args, Env env)
-    {
-        if (args.IsEmpty || args.Rest.IsEmpty || !args.Rest.Rest.IsEmpty)
-            throw new Exception("cons requires exactly 2 arguments");
-        var a = args.First;
-        var b = args.Rest.First;
-        return new LispCons(a, b);
-    }
-    private static LispObj BuiltinCar(ConsList args, Env env)
-    {
-        if (args.IsEmpty || !args.Rest.IsEmpty)
-            throw new Exception("car requires exactly 1 argument");
-        var lst = args.First;
-        if (lst is LispCons cons)
-            return cons.Car;
-        throw new Exception("car expects a non-empty list");
-    }
-    private static LispObj BuiltinCdr(ConsList args, Env env)
-    {
-        if (args.IsEmpty || !args.Rest.IsEmpty)
-            throw new Exception("cdr requires exactly 1 argument");
-        var lst = args.First;
-        if (lst is LispCons cons)
-            return cons.Cdr;
-        throw new Exception("cdr expects a non-empty list");
-    }
 }
 
 
@@ -656,12 +938,12 @@ class Program
 {
     static void Main(string[] args)
     {
-        Console.WriteLine("Simple Lisp Interpreter (C#)");
+        Console.WriteLine("Nora Lisp Interpreter (C#)");
         var globalEnv = Evaluator.CreateGlobalEnv();
 
         while (true)
         {
-            Console.Write("lisp> ");
+            Console.Write("> ");
             string line = Console.ReadLine();
             if (line == null || line.Trim() == "exit")
                 break;

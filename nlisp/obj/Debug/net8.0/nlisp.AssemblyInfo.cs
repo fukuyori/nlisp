@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("nlisp")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+73509908609b01b99b5cd61c8713808309e9be2a")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6e7a4aabe24bee34a8d19343a89a3d6b302d4613")]
 [assembly: System.Reflection.AssemblyProductAttribute("nlisp")]
 [assembly: System.Reflection.AssemblyTitleAttribute("nlisp")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
